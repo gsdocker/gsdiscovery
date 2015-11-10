@@ -1,0 +1,18 @@
+{
+    "name":"github.com/gsdocker/gsdiscovery",
+
+    "domain":"golang|gslang",
+
+    "import":[
+        {"name" : "github.com/gsmake/golang","domain":"task","version":"release/v3.0"},
+        {"name" : "github.com/gsrpc/gsrpc","domain":"task|gslang","version":"release/v1.0"},
+        {"name" : "github.com/gsrpc/gorpc","version":"release/v2.0"},
+        {"name" : "github.com/samuel/go-zookeeper","version":"master"}
+    ],
+
+    "properties":{
+        "gsmake.golang.test" :[
+             {"dir":"./zk","flags":"-bench . -cpu 4 "}
+       ]
+    }
+}
