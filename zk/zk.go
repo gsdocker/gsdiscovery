@@ -169,7 +169,13 @@ func (watcher *_Watcher) watchData(events <-chan zk.Event, zkpath string) {
 				continue
 			}
 
-			watcher.events <- &gsdiscovery.Event{Services: []*gorpc.NamedService{namedService}, State: gsdiscovery.EvtUpdated}
+			watcher.events <- &gsdiscovery.Event{
+				Services: []*gorpc.NamedService{namedService},
+				Updates:  []*gorpc.NamedService{watcher.cached[zkpath]},
+				State:    gsdiscovery.EvtUpdated,
+			}
+
+			watcher.cached[zkpath] = namedService
 		}
 	}
 }

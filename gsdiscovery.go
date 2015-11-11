@@ -25,6 +25,7 @@ const (
 // Event Watch event
 type Event struct {
 	Services []*gorpc.NamedService
+	Updates  []*gorpc.NamedService
 	State    Evt
 }
 
