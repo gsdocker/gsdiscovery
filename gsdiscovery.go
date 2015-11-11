@@ -12,19 +12,20 @@ type Pub interface {
 	Unregister(name *gorpc.NamedService) error
 }
 
-// State event state
-type State int
+// Evt event state
+type Evt int
 
 // event state enum
 const (
-	EventStateChildrenChanged = State(iota)
-	EventStateChildDataChanged
+	EvtCreated = Evt(iota)
+	EvtUpdated
+	EvtDeleted
 )
 
 // Event Watch event
 type Event struct {
 	Services []*gorpc.NamedService
-	State    State
+	State    Evt
 }
 
 // Watcher the service watcher

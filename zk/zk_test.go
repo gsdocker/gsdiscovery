@@ -11,6 +11,8 @@ import (
 
 var discovery gsdiscovery.Discovery
 
+var log = gslogger.Get("test")
+
 func TestConnect(t *testing.T) {
 	var err error
 	discovery, err = New([]string{"10.0.0.213:2181"})
@@ -30,8 +32,6 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	<-watcher.Chan()
-
 	namedService := gorpc.NewNamedService()
 
 	namedService.Name = "test"
@@ -46,7 +46,11 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	<-watcher.Chan()
+	event := <-watcher.Chan()
+
+	if event.State != gsdiscovery.EvtCreated {
+		t.Fatalf("check data changed event error")
+	}
 
 	namedService.VNodes = 10
 
@@ -56,9 +60,9 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	event := <-watcher.Chan()
+	event = <-watcher.Chan()
 
-	if event.State != gsdiscovery.EventStateChildDataChanged {
+	if event.State != gsdiscovery.EvtUpdated {
 		t.Fatalf("check data changed event error")
 	}
 
@@ -80,5 +84,9 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	<-watcher.Chan()
+	event = <-watcher.Chan()
+
+	if event.State != gsdiscovery.EvtDeleted {
+		t.Fatalf("check data changed event error")
+	}
 }
