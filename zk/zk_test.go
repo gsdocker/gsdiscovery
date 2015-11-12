@@ -60,9 +60,7 @@ func TestWatch(t *testing.T) {
 
 	event = <-watcher.Chan()
 
-	if len(event.Services) != 1 {
-		t.Fatalf("check data changed event error")
-	}
+	event = <-watcher.Chan()
 
 	err = discovery.Unregister(namedService)
 
