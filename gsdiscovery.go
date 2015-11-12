@@ -24,8 +24,8 @@ const (
 
 // Event Watch event
 type Event struct {
-	Services []*gorpc.NamedService
-	Updates  []*gorpc.NamedService
+	Services map[string]*gorpc.NamedService
+	Updates  map[string]*gorpc.NamedService
 	State    Evt
 }
 
@@ -49,5 +49,6 @@ type Discovery interface {
 	Pub
 	Sub
 	WatchPath(path string) Discovery
+	UpdateRegistry(path string) error
 	Close()
 }

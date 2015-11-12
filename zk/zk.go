@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gsdocker/gsconfig"
 	"github.com/gsdocker/gsdiscovery"
@@ -18,13 +19,13 @@ import (
 type _Watcher struct {
 	gslogger.Log                                // watcher log
 	conn         *zk.Conn                       // zookeeper connection
-	client       *Client                        // zookeeper client
+	client       *_Client                       // zookeeper client
 	events       chan *gsdiscovery.Event        // events queue
 	path         string                         // watch znode path
 	cached       map[string]*gorpc.NamedService // cached children
 }
 
-func newWatcher(path string, client *Client, children []string, events <-chan zk.Event) gsdiscovery.Watcher {
+func newWatcher(path string, client *_Client, children []string, events <-chan zk.Event) gsdiscovery.Watcher {
 	watcher := &_Watcher{
 		Log:    gslogger.Get("gsdiscovery-zk"),
 		conn:   client.conn,
@@ -73,8 +74,8 @@ func newWatcher(path string, client *Client, children []string, events <-chan zk
 
 func (watcher *_Watcher) fireEvent(children []string) {
 
-	var created []*gorpc.NamedService
-	var deleted []*gorpc.NamedService
+	created := make(map[string]*gorpc.NamedService)
+	deleted := make(map[string]*gorpc.NamedService)
 
 	cached := make(map[string]*gorpc.NamedService)
 
@@ -86,14 +87,14 @@ func (watcher *_Watcher) fireEvent(children []string) {
 			cached[zkpath] = service
 
 			if _, ok := watcher.cached[zkpath]; !ok {
-				created = append(created, service)
+				created[zkpath] = service
 			}
 		}
 	}
 
 	for zkpath, service := range watcher.cached {
 		if _, ok := cached[zkpath]; !ok {
-			deleted = append(deleted, service)
+			deleted[zkpath] = service
 		}
 	}
 
@@ -170,8 +171,8 @@ func (watcher *_Watcher) watchData(events <-chan zk.Event, zkpath string) {
 			}
 
 			watcher.events <- &gsdiscovery.Event{
-				Services: []*gorpc.NamedService{namedService},
-				Updates:  []*gorpc.NamedService{watcher.cached[zkpath]},
+				Updates:  map[string]*gorpc.NamedService{zkpath: namedService},
+				Services: map[string]*gorpc.NamedService{zkpath: watcher.cached[zkpath]},
 				State:    gsdiscovery.EvtUpdated,
 			}
 
@@ -190,8 +191,8 @@ func (watcher *_Watcher) Chan() <-chan *gsdiscovery.Event {
 	return watcher.events
 }
 
-// Client the gsdiscovery provider using zookeeper protocol
-type Client struct {
+// _Client the gsdiscovery provider using zookeeper protocol
+type _Client struct {
 	sync.Mutex // mixin mutex
 	log        gslogger.Log
 	conn       *zk.Conn                       // zookeeper connection
@@ -208,7 +209,7 @@ func New(servers []string) (gsdiscovery.Discovery, error) {
 		return nil, err
 	}
 
-	client := &Client{
+	client := &_Client{
 		log:      gslogger.Get("gsdiscovery-zk"),
 		conn:     conn,
 		path:     path.Clean(path.Join("/", gsconfig.String("gsdiscovery.zk.watch.path", "/gsdiscovery"))),
@@ -221,17 +222,55 @@ func New(servers []string) (gsdiscovery.Discovery, error) {
 }
 
 // Printf implement zk.Logger
-func (client *Client) Printf(f string, args ...interface{}) {
+func (client *_Client) Printf(f string, args ...interface{}) {
 	client.log.D(fmt.Sprintf(f, args...))
 }
 
 // WatchPath the zookeeper service watch root path
-func (client *Client) WatchPath(path string) gsdiscovery.Discovery {
+func (client *_Client) WatchPath(path string) gsdiscovery.Discovery {
 	client.path = path
 	return client
 }
 
-func (client *Client) ensureExists(zkpath string) error {
+// UpdateRegistry .
+func (client *_Client) UpdateRegistry(zkpath string) error {
+	if err := client.ensureExists(zkpath); err != nil {
+		return err
+	}
+
+	content, _, events, err := client.conn.GetW(zkpath)
+
+	if err != nil {
+		return err
+	}
+
+	if len(content) != 0 {
+		gorpc.RegistryLoad(bytes.NewBuffer(content), fmt.Sprintf("zk://%s", zkpath))
+	}
+
+	go client.watchRegistry(events, zkpath)
+
+	return nil
+}
+
+func (client *_Client) watchRegistry(events <-chan zk.Event, zkpath string) {
+	for _ = range events {
+		for {
+
+			if err := client.UpdateRegistry(zkpath); err != nil {
+				client.log.E("update registry error :%s", err)
+
+				<-time.After(gsconfig.Seconds("gsdiscovery.zk.reconnect", 5))
+
+				continue
+			}
+
+			break
+		}
+	}
+}
+
+func (client *_Client) ensureExists(zkpath string) error {
 	nodes := strings.Split(zkpath, "/")
 
 	zkpath = "/"
@@ -264,7 +303,7 @@ func (client *Client) ensureExists(zkpath string) error {
 	return nil
 }
 
-func (client *Client) closeWatcher(watcher *_Watcher) {
+func (client *_Client) closeWatcher(watcher *_Watcher) {
 	client.Lock()
 	defer client.Unlock()
 
@@ -272,7 +311,7 @@ func (client *Client) closeWatcher(watcher *_Watcher) {
 }
 
 // Watch create new zk node watcher
-func (client *Client) Watch(name string) (gsdiscovery.Watcher, error) {
+func (client *_Client) Watch(name string) (gsdiscovery.Watcher, error) {
 
 	path := fmt.Sprintf("%s/%s", client.path, name)
 
@@ -295,7 +334,7 @@ func (client *Client) Watch(name string) (gsdiscovery.Watcher, error) {
 }
 
 // Register register new named services to zk servers
-func (client *Client) Register(name *gorpc.NamedService) error {
+func (client *_Client) Register(name *gorpc.NamedService) error {
 
 	var buff bytes.Buffer
 
@@ -314,33 +353,26 @@ func (client *Client) Register(name *gorpc.NamedService) error {
 	for {
 		_, err = client.conn.Create(path, buff.Bytes(), zk.FlagEphemeral, zk.WorldACL(zk.PermAll))
 
-		if err != nil && err != zk.ErrNodeExists {
+		if err == zk.ErrNodeExists {
+			client.Unregister(name)
+			continue
+		}
+
+		if err != nil {
 			return gserrors.Newf(err, "create znode :%s error", path)
 		}
 
-		if err == zk.ErrNodeExists {
-			client.log.D("update znode :%s", path)
-
-			_, err := client.conn.Set(path, buff.Bytes(), 0)
-
-			if err == zk.ErrNoNode {
-				continue
-			}
-
-			if err != nil {
-				return gserrors.Newf(err, "create znode :%s error", path)
-			}
-		}
-
-		client.log.D("register znode :%s -- success", path)
-
-		return nil
+		break
 	}
+
+	client.log.D("register znode :%s -- success", path)
+
+	return nil
 
 }
 
 // Close implement the Discovery interface
-func (client *Client) Close() {
+func (client *_Client) Close() {
 
 	client.Lock()
 	defer client.Unlock()
@@ -351,7 +383,7 @@ func (client *Client) Close() {
 }
 
 // Unregister unregister new named services to zk servers
-func (client *Client) Unregister(name *gorpc.NamedService) error {
+func (client *_Client) Unregister(name *gorpc.NamedService) error {
 
 	path := fmt.Sprintf("%s/%s/%s", client.path, name.Name, name.NodeName)
 
