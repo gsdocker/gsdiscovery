@@ -16,13 +16,18 @@ import (
 	"github.com/samuel/go-zookeeper/zk"
 )
 
+type _Cached struct {
+	service *gorpc.NamedService
+	state   *zk.Stat
+}
+
 type _Watcher struct {
-	gslogger.Log                                // watcher log
-	conn         *zk.Conn                       // zookeeper connection
-	client       *_Client                       // zookeeper client
-	events       chan *gsdiscovery.Event        // events queue
-	path         string                         // watch znode path
-	cached       map[string]*gorpc.NamedService // cached children
+	gslogger.Log                         // watcher log
+	conn         *zk.Conn                // zookeeper connection
+	client       *_Client                // zookeeper client
+	events       chan *gsdiscovery.Event // events queue
+	path         string                  // watch znode path
+	cached       map[string]*_Cached     // cached children
 }
 
 func newWatcher(path string, client *_Client, children []string, events <-chan zk.Event) gsdiscovery.Watcher {
@@ -32,7 +37,7 @@ func newWatcher(path string, client *_Client, children []string, events <-chan z
 		client: client,
 		events: make(chan *gsdiscovery.Event, gsconfig.Int("gsdisconvery.zk.events.size", 1024)),
 		path:   path,
-		cached: make(map[string]*gorpc.NamedService),
+		cached: make(map[string]*_Cached),
 	}
 
 	watcher.fireEvent(children)
@@ -58,6 +63,8 @@ func newWatcher(path string, client *_Client, children []string, events <-chan z
 
 				children, _, events, err = watcher.conn.ChildrenW(path)
 
+				watcher.V("children :%v", children)
+
 				if err != nil {
 					watcher.Close()
 					break
@@ -77,34 +84,38 @@ func (watcher *_Watcher) fireEvent(children []string) {
 	created := make(map[string]*gorpc.NamedService)
 	deleted := make(map[string]*gorpc.NamedService)
 
-	cached := make(map[string]*gorpc.NamedService)
+	cached := make(map[string]*_Cached)
 
 	for _, child := range children {
 
 		zkpath := path.Join(watcher.path, child)
 
-		if service, ok := watcher.getData(zkpath); ok {
-			cached[zkpath] = service
-
-			if _, ok := watcher.cached[zkpath]; !ok {
-				created[zkpath] = service
+		if service, state, ok := watcher.getData(zkpath); ok {
+			cached[zkpath] = &_Cached{
+				service: service,
+				state:   state,
 			}
+
+			old, ok := watcher.cached[zkpath]
+
+			if !ok {
+				created[zkpath] = service
+			} else if old.state.Czxid != state.Czxid {
+				created[zkpath] = service
+				deleted[zkpath] = old.service
+			}
+
 		}
 	}
 
 	for zkpath, service := range watcher.cached {
+
 		if _, ok := cached[zkpath]; !ok {
-			deleted[zkpath] = service
+			deleted[zkpath] = service.service
 		}
 	}
 
 	watcher.cached = cached
-
-	if len(created) != 0 {
-		watcher.events <- &gsdiscovery.Event{Services: created, State: gsdiscovery.EvtCreated}
-
-		watcher.D("watcher(%s) fire EvtCreated", watcher.path)
-	}
 
 	if len(deleted) != 0 {
 		watcher.events <- &gsdiscovery.Event{Services: deleted, State: gsdiscovery.EvtDeleted}
@@ -112,15 +123,21 @@ func (watcher *_Watcher) fireEvent(children []string) {
 		watcher.D("watcher(%s) fire EvtDeleted", watcher.path)
 	}
 
+	if len(created) != 0 {
+		watcher.events <- &gsdiscovery.Event{Services: created, State: gsdiscovery.EvtCreated}
+
+		watcher.D("watcher(%s) fire EvtCreated", watcher.path)
+	}
+
 }
 
-func (watcher *_Watcher) getData(zkpath string) (*gorpc.NamedService, bool) {
+func (watcher *_Watcher) getData(zkpath string) (*gorpc.NamedService, *zk.Stat, bool) {
 	watcher.D("get znode :%s content", zkpath)
-	content, _, events, err := watcher.conn.GetW(zkpath)
+	content, state, events, err := watcher.conn.GetW(zkpath)
 
 	if err != nil {
 		watcher.E("get znode %s content error\n\t%s", zkpath, err)
-		return nil, false
+		return nil, nil, false
 	}
 
 	watcher.D("get znode :%s content -- success", zkpath)
@@ -129,12 +146,12 @@ func (watcher *_Watcher) getData(zkpath string) (*gorpc.NamedService, bool) {
 
 	if err != nil {
 		watcher.E("unmarshal znode %s content error\n\t%s", zkpath, err)
-		return nil, false
+		return nil, nil, false
 	}
 
 	go watcher.watchData(events, zkpath)
 
-	return namedService, true
+	return namedService, state, true
 }
 
 func (watcher *_Watcher) watchData(events <-chan zk.Event, zkpath string) {
@@ -157,7 +174,9 @@ func (watcher *_Watcher) watchData(events <-chan zk.Event, zkpath string) {
 
 			var content []byte
 
-			content, _, events, err = watcher.conn.GetW(zkpath)
+			var stat *zk.Stat
+
+			content, stat, events, err = watcher.conn.GetW(zkpath)
 
 			if err != nil {
 				break
@@ -172,11 +191,14 @@ func (watcher *_Watcher) watchData(events <-chan zk.Event, zkpath string) {
 
 			watcher.events <- &gsdiscovery.Event{
 				Updates:  map[string]*gorpc.NamedService{zkpath: namedService},
-				Services: map[string]*gorpc.NamedService{zkpath: watcher.cached[zkpath]},
+				Services: map[string]*gorpc.NamedService{zkpath: watcher.cached[zkpath].service},
 				State:    gsdiscovery.EvtUpdated,
 			}
 
-			watcher.cached[zkpath] = namedService
+			watcher.cached[zkpath] = &_Cached{
+				service: namedService,
+				state:   stat,
+			}
 		}
 	}
 }

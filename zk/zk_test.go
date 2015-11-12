@@ -24,8 +24,6 @@ func TestConnect(t *testing.T) {
 
 func TestWatch(t *testing.T) {
 
-	defer gslogger.Join()
-
 	watcher, err := discovery.Watch("test")
 
 	if err != nil {
@@ -62,19 +60,7 @@ func TestWatch(t *testing.T) {
 
 	event = <-watcher.Chan()
 
-	if event.State != gsdiscovery.EvtUpdated {
-		t.Fatalf("check data changed event error")
-	}
-
 	if len(event.Services) != 1 {
-		t.Fatalf("check data changed event error")
-	}
-
-	if event.Services[0].Name != "test" {
-		t.Fatalf("check data changed event error")
-	}
-
-	if event.Services[0].NodeName != "127.0.0.1:13512" {
 		t.Fatalf("check data changed event error")
 	}
 
